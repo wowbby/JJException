@@ -88,6 +88,8 @@ static const char DeallocKVOKey;
 #else
 @property(nonatomic,readwrite,assign)dispatch_semaphore_t kvoLock;
 #endif
+@property(nonatomic,readwrite,assign)NSThread *lockOwnerThread;
+@property(nonatomic,readwrite,assign)NSInteger lockCount;
 
 - (void)checkAddKVOItemExist:(KVOObjectItem*)item existResult:(void (^)(void))existResult;
 
@@ -103,13 +105,13 @@ static const char DeallocKVOKey;
         return;
     }
     BOOL needExecute = NO;
-    dispatch_semaphore_wait(self.kvoLock, DISPATCH_TIME_FOREVER);
+    [self lock];
     BOOL exist = [self.kvoObjectSet containsObject:item];
     if (!exist) {
         [self.kvoObjectSet addObject:item];
         needExecute = YES;
     }
-    dispatch_semaphore_signal(self.kvoLock);
+    [self unlock];
     if (needExecute && existResult) {
         existResult();
     }
@@ -117,9 +119,9 @@ static const char DeallocKVOKey;
 
 - (void)lockObjectSet:(void (^)(NSMutableSet *kvoObjectSet))objectSet {
     if (objectSet) {
-        dispatch_semaphore_wait(self.kvoLock, DISPATCH_TIME_FOREVER);
+        [self lock];
         objectSet(self.kvoObjectSet);
-        dispatch_semaphore_signal(self.kvoLock);
+        [self unlock];
     }
 }
 
@@ -143,23 +145,64 @@ static const char DeallocKVOKey;
 
 /// Clean the kvo info and set the item property nil,break the reference
 - (void)cleanKVOData{
-    dispatch_semaphore_wait(self.kvoLock, DISPATCH_TIME_FOREVER);
+    NSMutableArray *itemsNeedClean = nil;
+    [self lock];
     for (KVOObjectItem* item in self.kvoObjectSet) {
-        #pragma clang diagnostic push
-        #pragma clang diagnostic ignored "-Wundeclared-selector"
-        if (item.observer) {
-            @try {
-                ((void(*)(id,SEL,id,NSString*))objc_msgSend)(item.whichObject,@selector(hookRemoveObserver:forKeyPath:),item.observer,item.keyPath);
-            }@catch (NSException *exception) {
+        if (item.observer && item.whichObject && item.keyPath.length > 0) {
+            if (!itemsNeedClean) {
+                itemsNeedClean = [[NSMutableArray alloc] init];
             }
+            [itemsNeedClean addObject:item];
+        }else{
             item.observer = nil;
             item.whichObject = nil;
             item.keyPath = nil;
         }
-        #pragma clang diagnostic pop
     }
     [self.kvoObjectSet removeAllObjects];
-    dispatch_semaphore_signal(self.kvoLock);
+    [self unlock];
+
+    if (!itemsNeedClean) {
+        return;
+    }
+
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wundeclared-selector"
+    for (KVOObjectItem* item in itemsNeedClean) {
+        @try {
+            ((void(*)(id,SEL,id,NSString*))objc_msgSend)(item.whichObject,@selector(hookRemoveObserver:forKeyPath:),item.observer,item.keyPath);
+        }@catch (NSException *exception) {
+        }
+        item.observer = nil;
+        item.whichObject = nil;
+        item.keyPath = nil;
+    }
+    #pragma clang diagnostic pop
+
+    [itemsNeedClean release];
+}
+
+- (void)lock{
+    NSThread *currentThread = [NSThread currentThread];
+    if (self.lockOwnerThread == currentThread) {
+        self.lockCount += 1;
+        return;
+    }
+    dispatch_semaphore_wait(self.kvoLock, DISPATCH_TIME_FOREVER);
+    self.lockOwnerThread = currentThread;
+    self.lockCount = 1;
+}
+
+- (void)unlock{
+    if (self.lockOwnerThread != [NSThread currentThread]) {
+        return;
+    }
+    self.lockCount -= 1;
+    if (self.lockCount <= 0) {
+        self.lockOwnerThread = nil;
+        self.lockCount = 0;
+        dispatch_semaphore_signal(self.kvoLock);
+    }
 }
 
 - (NSMutableSet*)kvoObjectSet{
@@ -307,16 +350,21 @@ static const char DeallocKVOKey;
     if (!object) {
         return NO;
     }
-
-    //Ignore ReactiveCocoa
-    if (object_getClass(object) == objc_getClass("RACKVOProxy")) {
+    if ([NSStringFromClass(object_getClass(object)) isEqualToString:@"AVProxyKVOObserver"]) {
         return YES;
     }
-
-    //Ignore AVKit internal proxy observer to avoid recursive registration
-    if (object_getClass(object) == objc_getClass("AVProxyKVOObserver")) {
+    if ([NSStringFromClass(object_getClass(object)) isEqualToString:@"RACKVOProxy"]) {
         return YES;
     }
+    if ([NSStringFromClass(object_getClass(object)) isEqualToString:@"WebAVPlayerController"]) {
+        return YES;
+    }
+    
+    if ([NSStringFromClass(object_getClass(object)) isEqualToString:@"NSKVONotifying_WebAVPlayerController"]) {
+        return YES;
+    }
+    
+    NSLog(@"ignoreKVOInstanceClass:%@",object_getClass(object));
 
     //Ignore AMAP
     NSString* className = NSStringFromClass(object_getClass(object));
