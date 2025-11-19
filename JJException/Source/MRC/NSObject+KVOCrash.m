@@ -363,9 +363,6 @@ static const char DeallocKVOKey;
     if ([NSStringFromClass(object_getClass(object)) isEqualToString:@"NSKVONotifying_WebAVPlayerController"]) {
         return YES;
     }
-    
-    NSLog(@"ignoreKVOInstanceClass:%@",object_getClass(object));
-
     //Ignore AMAP
     NSString* className = NSStringFromClass(object_getClass(object));
     if ([className hasPrefix:@"AMap"]) {
