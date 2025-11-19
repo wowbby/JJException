@@ -313,6 +313,11 @@ static const char DeallocKVOKey;
         return YES;
     }
 
+    //Ignore AVKit internal proxy observer to avoid recursive registration
+    if (object_getClass(object) == objc_getClass("AVProxyKVOObserver")) {
+        return YES;
+    }
+
     //Ignore AMAP
     NSString* className = NSStringFromClass(object_getClass(object));
     if ([className hasPrefix:@"AMap"]) {
