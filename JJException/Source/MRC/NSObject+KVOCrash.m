@@ -99,19 +99,20 @@ static const char DeallocKVOKey;
 /// @param item KVOObjectItem
 /// @param existResult item exist block
 - (void)checkAddKVOItemExist:(KVOObjectItem*)item existResult:(void (^)(void))existResult{
-    dispatch_semaphore_wait(self.kvoLock, DISPATCH_TIME_FOREVER);
     if (!item) {
-        dispatch_semaphore_signal(self.kvoLock);
         return;
     }
+    BOOL needExecute = NO;
+    dispatch_semaphore_wait(self.kvoLock, DISPATCH_TIME_FOREVER);
     BOOL exist = [self.kvoObjectSet containsObject:item];
     if (!exist) {
-        if (existResult) {
-            existResult();
-        }
         [self.kvoObjectSet addObject:item];
+        needExecute = YES;
     }
     dispatch_semaphore_signal(self.kvoLock);
+    if (needExecute && existResult) {
+        existResult();
+    }
 }
 
 - (void)lockObjectSet:(void (^)(NSMutableSet *kvoObjectSet))objectSet {
