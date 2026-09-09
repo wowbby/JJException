@@ -44,7 +44,7 @@ JJSYNTH_DUMMY_CLASS(NSAttributedString_AttributedStringHook)
 }
 
 - (NSAttributedString *)hookAttributedSubstringFromRange:(NSRange)range{
-    if (range.location + range.length <= self.length) {
+    if (range.location <= self.length && range.length <= self.length - range.location) {
         return [self hookAttributedSubstringFromRange:range];
     }
     handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSAttributedString attributedSubstringFromRange range:%@",NSStringFromRange(range)]);
@@ -52,7 +52,11 @@ JJSYNTH_DUMMY_CLASS(NSAttributedString_AttributedStringHook)
 }
 
 - (void)hookEnumerateAttribute:(NSString *)attrName inRange:(NSRange)range options:(NSAttributedStringEnumerationOptions)opts usingBlock:(void (^)(id _Nullable, NSRange, BOOL * _Nonnull))block{
-    if (range.location + range.length <= self.length) {
+    if (!block) {
+        handleCrashException(JJExceptionGuardNSStringContainer, @"NSAttributedString enumeration requires a block");
+        return;
+    }
+    if (range.location <= self.length && range.length <= self.length - range.location) {
         [self hookEnumerateAttribute:attrName inRange:range options:opts usingBlock:block];
     }else{
         handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSAttributedString enumerateAttribute attrName:%@ range:%@",attrName,NSStringFromRange(range)]);
@@ -60,12 +64,16 @@ JJSYNTH_DUMMY_CLASS(NSAttributedString_AttributedStringHook)
 }
 
 - (void)hookEnumerateAttributesInRange:(NSRange)range options:(NSAttributedStringEnumerationOptions)opts usingBlock:(void (^)(NSDictionary<NSString*,id> * _Nonnull, NSRange, BOOL * _Nonnull))block{
+    if (!block) {
+        handleCrashException(JJExceptionGuardNSStringContainer, @"NSAttributedString enumeration requires a block");
+        return;
+    }
     
     if (range.location == NSNotFound && range.length == 0) {
         [self hookEnumerateAttributesInRange:range options:opts usingBlock:block];
         return;
     }
-    if (range.location + range.length <= self.length && range.location != NSNotFound) {
+    if (range.location <= self.length && range.length <= self.length - range.location && range.location != NSNotFound) {
         [self hookEnumerateAttributesInRange:range options:opts usingBlock:block];
     } else {
         handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSAttributedString enumerateAttributesInRange range:%@",NSStringFromRange(range)]);

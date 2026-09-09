@@ -51,7 +51,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableAttributedString_MutableAttributedStringHook)
     if (!range.length) {
         [self hookAddAttribute:name value:value range:range];
     }else if (value){
-        if (range.location + range.length <= self.length) {
+        if (range.location <= self.length && range.length <= self.length - range.location) {
             [self hookAddAttribute:name value:value range:range];
         }else{
             handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSMutableAttributedString addAttribute:value:range: name:%@ value:%@ range:%@",name,value,NSStringFromRange(range)]);
@@ -64,7 +64,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableAttributedString_MutableAttributedStringHook)
     if (!range.length) {
         [self hookAddAttributes:attrs range:range];
     }else if (attrs){
-        if (range.location + range.length <= self.length) {
+        if (range.location <= self.length && range.length <= self.length - range.location) {
             [self hookAddAttributes:attrs range:range];
         }else{
             handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSMutableAttributedString addAttributes:range: attrs:%@ range:%@",attrs,NSStringFromRange(range)]);
@@ -78,7 +78,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableAttributedString_MutableAttributedStringHook)
     if (!range.length) {
         [self hookSetAttributes:attrs range:range];
     } else {
-        if (range.location + range.length <= self.length) {
+        if (range.location <= self.length && range.length <= self.length - range.location) {
             [self hookSetAttributes:attrs range:range];
         }else{
             handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSMutableAttributedString setAttributes:range: attrs:%@ range:%@",attrs,NSStringFromRange(range)]);
@@ -90,7 +90,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableAttributedString_MutableAttributedStringHook)
     if (!range.length) {
         [self hookRemoveAttribute:name range:range];
     }else if (name){
-        if (range.location + range.length <= self.length) {
+        if (range.location <= self.length && range.length <= self.length - range.location) {
             [self hookRemoveAttribute:name range:range];
         }else {
             handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSMutableAttributedString removeAttribute:range: name:%@ range:%@",name,NSStringFromRange(range)]);
@@ -101,7 +101,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableAttributedString_MutableAttributedStringHook)
 }
 
 - (void)hookDeleteCharactersInRange:(NSRange)range {
-    if (range.location + range.length <= self.length) {
+    if (range.location <= self.length && range.length <= self.length - range.location) {
         [self hookDeleteCharactersInRange:range];
     }else {
         handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSMutableAttributedString deleteCharactersInRange: range:%@",NSStringFromRange(range)]);
@@ -109,7 +109,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableAttributedString_MutableAttributedStringHook)
 }
 - (void)hookReplaceCharactersInRange:(NSRange)range withString:(NSString *)str {
     if (str){
-        if (range.location + range.length <= self.length) {
+        if (range.location <= self.length && range.length <= self.length - range.location) {
             [self hookReplaceCharactersInRange:range withString:str];
         }else{
             handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSMutableAttributedString replaceCharactersInRange:withString string:%@ range:%@",str,NSStringFromRange(range)]);
@@ -120,7 +120,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableAttributedString_MutableAttributedStringHook)
 }
 - (void)hookReplaceCharactersInRange:(NSRange)range withAttributedString:(NSAttributedString *)str {
     if (str){
-        if (range.location + range.length <= self.length) {
+        if (range.location <= self.length && range.length <= self.length - range.location) {
             [self hookReplaceCharactersInRange:range withAttributedString:str];
         }else{
           handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSMutableAttributedString replaceCharactersInRange:withString string:%@ range:%@",str,NSStringFromRange(range)]);

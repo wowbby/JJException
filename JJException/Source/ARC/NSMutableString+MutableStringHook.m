@@ -42,7 +42,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableString_MutableStringHook)
 }
 
 - (void) hookDeleteCharactersInRange:(NSRange)range{
-    if (range.location + range.length <= self.length){
+    if (range.location <= self.length && range.length <= self.length - range.location){
         [self hookDeleteCharactersInRange:range];
     }else{
         handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSMutableString deleteCharactersInRange value:%@ range:%@",self,NSStringFromRange(range)]);
@@ -66,7 +66,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableString_MutableStringHook)
 }
 
 - (NSString *)hookSubstringWithRange:(NSRange)range{
-    if (range.location + range.length <= self.length) {
+    if (range.location <= self.length && range.length <= self.length - range.location) {
         return [self hookSubstringWithRange:range];
     }
     handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSMutableString substringWithRange value:%@ range:%@",self,NSStringFromRange(range)]);

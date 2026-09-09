@@ -75,7 +75,7 @@ JJSYNTH_DUMMY_CLASS(NSArray_ArrayHook)
 }
 - (NSArray *)hookSubarrayWithRange:(NSRange)range
 {
-    if (range.location + range.length <= self.count){
+    if (range.location <= self.count && range.length <= self.count - range.location){
         return [self hookSubarrayWithRange:range];
     }else if (range.location < self.count){
         return [self hookSubarrayWithRange:NSMakeRange(range.location, self.count-range.location)];
@@ -85,16 +85,28 @@ JJSYNTH_DUMMY_CLASS(NSArray_ArrayHook)
 }
 + (instancetype)hookArrayWithObjects:(const id [])objects count:(NSUInteger)cnt
 {
-    NSInteger index = 0;
-    id objs[cnt];
-    for (NSInteger i = 0; i < cnt ; ++i) {
-        if (objects[i]) {
-            objs[index++] = objects[i];
-        }else{
-            handleCrashException(JJExceptionGuardArrayContainer,[NSString stringWithFormat:@"NSArray arrayWithObjects invalid index object:%tu total:%tu",i,cnt]);
-        }
+    if (cnt == 0) return [self hookArrayWithObjects:objects count:cnt];
+    if (!objects || cnt > SIZE_MAX / sizeof(id)) {
+        handleCrashException(JJExceptionGuardArrayContainer, @"NSArray invalid objects buffer or count");
+        return nil;
     }
-    return [self hookArrayWithObjects:objs count:index];
+    NSUInteger validCount = 0;
+    for (NSUInteger i = 0; i < cnt; ++i) if (objects[i]) ++validCount;
+    if (validCount == cnt) return [self hookArrayWithObjects:objects count:cnt];
+
+    id *filtered = validCount ? malloc(validCount * sizeof(id)) : NULL;
+    if (validCount && !filtered) {
+        handleCrashException(JJExceptionGuardArrayContainer, @"NSArray could not allocate filtered buffer");
+        return nil;
+    }
+    @try {
+        NSUInteger index = 0;
+        for (NSUInteger i = 0; i < cnt; ++i) if (objects[i]) filtered[index++] = objects[i];
+        handleCrashException(JJExceptionGuardArrayContainer, @"NSArray ignored nil objects");
+        return [self hookArrayWithObjects:filtered count:validCount];
+    } @finally {
+        free(filtered);
+    }
 }
 
 @end

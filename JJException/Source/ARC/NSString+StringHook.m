@@ -86,7 +86,7 @@ JJSYNTH_DUMMY_CLASS(NSString_StringHook)
 }
 
 - (NSString *)hookSubstringWithRange:(NSRange)range{
-    if (range.location + range.length <= self.length) {
+    if (range.location <= self.length && range.length <= self.length - range.location) {
         return [self hookSubstringWithRange:range];
     }
     handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSString substringWithRange value:%@ range:%@",self,NSStringFromRange(range)]);
@@ -94,7 +94,7 @@ JJSYNTH_DUMMY_CLASS(NSString_StringHook)
 }
 - (NSRange)hookRangeOfString:(NSString *)searchString options:(NSStringCompareOptions)mask range:(NSRange)range locale:(nullable NSLocale *)locale{
     if (searchString){
-        if (range.location + range.length <= self.length) {
+        if (range.location <= self.length && range.length <= self.length - range.location) {
             return [self hookRangeOfString:searchString options:mask range:range locale:locale];
         }
         handleCrashException(JJExceptionGuardNSStringContainer,[NSString stringWithFormat:@"NSString rangeOfString:options:range:locale: value:%@ range:%@",self,NSStringFromRange(range)]);

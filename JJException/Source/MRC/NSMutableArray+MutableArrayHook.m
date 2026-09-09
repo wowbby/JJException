@@ -93,7 +93,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableArray_MutableArrayHook)
 }
 
 - (void) hookRemoveObjectsInRange:(NSRange)range {
-    if (range.location + range.length <= self.count) {
+    if (range.location <= self.count && range.length <= self.count - range.location) {
         [self hookRemoveObjectsInRange:range];
     }else{
         handleCrashException(JJExceptionGuardArrayContainer,[NSString stringWithFormat:@"NSMutableArray removeObjectsInRange invalid range location:%tu length:%tu",range.location,range.length]);
@@ -102,7 +102,7 @@ JJSYNTH_DUMMY_CLASS(NSMutableArray_MutableArrayHook)
 
 - (NSArray *)hookSubarrayWithRange:(NSRange)range
 {
-    if (range.location + range.length <= self.count){
+    if (range.location <= self.count && range.length <= self.count - range.location){
         return [self hookSubarrayWithRange:range];
     }else if (range.location < self.count){
         return [self hookSubarrayWithRange:NSMakeRange(range.location, self.count-range.location)];
