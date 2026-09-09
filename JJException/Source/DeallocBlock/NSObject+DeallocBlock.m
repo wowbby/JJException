@@ -37,7 +37,9 @@ static const char DeallocNSObjectKey;
     @synchronized(self){
         NSMutableArray* blockArray = objc_getAssociatedObject(self, &DeallocNSObjectKey);
         if (!blockArray) {
-            blockArray = [NSMutableArray array];
+            // The association must be the sole owner after this method returns.
+            // An autoreleased array can defer callbacks until after the owner is freed.
+            blockArray = [NSMutableArray new];
             objc_setAssociatedObject(self, &DeallocNSObjectKey, blockArray, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         

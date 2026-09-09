@@ -9,7 +9,6 @@ import tempfile
 parser = argparse.ArgumentParser()
 parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[1])
 parser.add_argument("--cases", nargs="+", default=["collections", "ranges", "nil-block", "reporting", "zombie-cache", "notifications", "swizzle", "timers"])
-parser.add_argument("--all-guards", action="store_true")
 parser.add_argument("--timeout", type=float, default=10)
 parser.add_argument("--sanitize", choices=["address", "thread"])
 args = parser.parse_args()
@@ -32,10 +31,6 @@ with tempfile.TemporaryDirectory(prefix="jj-guard-") as tmp:
     executable = Path(tmp) / "guard-regression"
     subprocess.run(["xcrun", "clang", *sanitizer, *objects, "-framework", "Foundation", "-o", str(executable)], check=True)
     environment = os.environ.copy()
-    if args.all_guards:
-        environment["JJ_TEST_ALL_GUARDS"] = "1"
-    else:
-        environment.pop("JJ_TEST_ALL_GUARDS", None)
     failed = []
     for case in args.cases:
         try:

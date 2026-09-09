@@ -54,6 +54,16 @@
 }
 @end
 
+static void *zombieChurn(void *unused) {
+    for (NSUInteger i = 0; i < 1000; i++) {
+        @autoreleasepool {
+            __attribute__((objc_precise_lifetime)) id object = [GuardZombie new];
+            CHECK(object != nil);
+        }
+    }
+    return NULL;
+}
+
 static void *collections(void *unused) {
     @autoreleasepool {
         NSUInteger count = 100000;
@@ -136,11 +146,11 @@ int main(int argc, char **argv) {
                 CHECK(a != b);
             }
             CHECK([JJExceptionProxy shareExceptionProxy].currentZombieCount == 2);
-            for (NSUInteger i = 0; i < 3000; i++) {
-                @autoreleasepool { __attribute__((objc_precise_lifetime)) id object = [GuardZombie new]; CHECK(object != nil); }
-            }
+            pthread_t threads[4];
+            for (NSUInteger i = 0; i < 4; i++) CHECK(pthread_create(&threads[i], NULL, zombieChurn, NULL) == 0);
+            for (NSUInteger i = 0; i < 4; i++) CHECK(pthread_join(threads[i], NULL) == 0);
             CHECK([JJExceptionProxy shareExceptionProxy].currentZombieCount > 2);
-            CHECK([JJExceptionProxy shareExceptionProxy].currentZombieCount < 3002);
+            CHECK([JJExceptionProxy shareExceptionProxy].currentZombieCount < 4002);
             CHECK([JJExceptionProxy shareExceptionProxy].currentZombieSize <= 5 * 1024 * 1024);
         } else if ([which isEqual:@"notifications"]) {
             GuardCenter *center = [GuardCenter new];
