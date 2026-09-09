@@ -55,7 +55,9 @@ typedef NS_OPTIONS(NSInteger,JJExceptionGuardCategory){
 @optional
 
 /**
- Crash message,exceptionCategory, extra info from current thread
+ Crash message,exceptionCategory, extra info from current thread.
+ If implemented, this callback takes precedence over the legacy callback.
+ Nested reports on this thread and exceptions raised by the handler are suppressed.
  
  @param exceptionMessage crash message
  @param exceptionCategory JJExceptionGuardCategory

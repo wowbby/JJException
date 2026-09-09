@@ -8,7 +8,7 @@ import tempfile
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[1])
-parser.add_argument("--cases", nargs="+", default=["collections", "ranges", "nil-block"])
+parser.add_argument("--cases", nargs="+", default=["collections", "ranges", "nil-block", "reporting"])
 parser.add_argument("--all-guards", action="store_true")
 parser.add_argument("--timeout", type=float, default=10)
 parser.add_argument("--sanitize", choices=["address", "thread"])

@@ -6,6 +6,22 @@
 #include <stdlib.h>
 #define CHECK(...) do { if (!(__VA_ARGS__)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #__VA_ARGS__); abort(); } } while (0)
 
+@interface GuardReporter : NSObject <JJExceptionHandle>
+@property NSUInteger legacyCount;
+@property NSUInteger count;
+@property BOOL reenter;
+@property BOOL throwsException;
+@end
+@implementation GuardReporter
+- (void)handleCrashException:(NSString *)message extraInfo:(NSDictionary *)info { self.legacyCount++; }
+- (void)handleCrashException:(NSString *)message exceptionCategory:(JJExceptionGuardCategory)category extraInfo:(NSDictionary *)info {
+    self.count++;
+    CHECK(self.count < 10);
+    if (self.reenter) [[NSArray array] objectAtIndex:0];
+    if (self.throwsException) [NSException raise:@"ReporterFailure" format:@"test"];
+}
+@end
+
 static void *collections(void *unused) {
     @autoreleasepool {
         NSUInteger count = 100000;
@@ -64,6 +80,19 @@ int main(int argc, char **argv) {
             __block NSUInteger visited = 0;
             [attr enumerateAttributesInRange:NSMakeRange(0, 3) options:0 usingBlock:^(NSDictionary *d, NSRange r, BOOL *stop) { visited += r.length; }];
             CHECK(visited == 3);
+        } else if ([which isEqual:@"reporting"]) {
+            GuardReporter *reporter = [GuardReporter new];
+            [JJException registerExceptionHandle:reporter];
+            reporter.reenter = YES;
+            CHECK([[NSArray array] objectAtIndex:0] == nil);
+            CHECK(reporter.count == 1 && reporter.legacyCount == 0);
+            reporter.reenter = NO;
+            reporter.throwsException = YES;
+            CHECK([[NSArray array] objectAtIndex:0] == nil);
+            CHECK(reporter.count == 2);
+            reporter.throwsException = NO;
+            CHECK([[NSArray array] objectAtIndex:0] == nil);
+            CHECK(reporter.count == 3);
         } else { CHECK(NO); }
         printf("PASS %s\n", argv[1]);
     }

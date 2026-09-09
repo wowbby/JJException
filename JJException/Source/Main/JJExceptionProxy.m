@@ -9,6 +9,7 @@
 #import "JJExceptionProxy.h"
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
+#import <pthread.h>
 
 __attribute__((overloadable)) void handleCrashException(NSString* exceptionMessage){
     [[JJExceptionProxy shareExceptionProxy] handleCrashException:exceptionMessage extraInfo:@{}];
@@ -95,37 +96,37 @@ uintptr_t get_slide_address(void) {
 }
 
 - (void)handleCrashException:(NSString *)exceptionMessage exceptionCategory:(JJExceptionGuardCategory)exceptionCategory extraInfo:(NSDictionary *)info{
-    if (!exceptionMessage) {
-        return;
-    }
-    
-    NSArray* callStack = [NSThread callStackSymbols];
-    NSString* callStackString = [NSString stringWithFormat:@"%@",callStack];
-    
-    uintptr_t loadAddress =  get_load_address();
-    uintptr_t slideAddress =  get_slide_address();
-    
-    NSString* exceptionResult = [NSString stringWithFormat:@"%ld\n%ld\n%@\n%@",loadAddress,slideAddress,exceptionMessage,callStackString];
-    
-    
-    if ([self.delegate respondsToSelector:@selector(handleCrashException:extraInfo:)]){
-        [self.delegate handleCrashException:exceptionResult extraInfo:info];
-    }
-    
-    if ([self.delegate respondsToSelector:@selector(handleCrashException:exceptionCategory:extraInfo:)]) {
-        [self.delegate handleCrashException:exceptionResult exceptionCategory:exceptionCategory extraInfo:info];
-    }
-    
+    if (!exceptionMessage) return;
+    static pthread_key_t reportingKey;
+    static dispatch_once_t onceToken;
+    static int keyError;
+    dispatch_once(&onceToken, ^{ keyError = pthread_key_create(&reportingKey, NULL); });
+    if (keyError || pthread_getspecific(reportingKey)) return;
+    if (pthread_setspecific(reportingKey, (void *)1) != 0) return;
+    @try {
+        NSArray *callStack = [NSThread callStackSymbols];
+        NSString *exceptionResult = [NSString stringWithFormat:@"%lu\n%lu\n%@\n%@",
+                                     (unsigned long)get_load_address(), (unsigned long)get_slide_address(),
+                                     exceptionMessage, callStack];
+        id<JJExceptionHandle> delegate = self.delegate;
+        // Prefer the category-aware callback; deliver each event only once.
+        if ([delegate respondsToSelector:@selector(handleCrashException:exceptionCategory:extraInfo:)]) {
+            [delegate handleCrashException:exceptionResult exceptionCategory:exceptionCategory extraInfo:info];
+        } else if ([delegate respondsToSelector:@selector(handleCrashException:extraInfo:)]) {
+            [delegate handleCrashException:exceptionResult extraInfo:info];
+        }
 #ifdef DEBUG
-    NSLog(@"================================JJException Start==================================");
-    NSLog(@"JJException Type:%ld",(long)exceptionCategory);
-    NSLog(@"JJException Description:%@",exceptionMessage);
-    NSLog(@"JJException Extra info:%@",info);
-    NSLog(@"JJException CallStack:%@",callStack);
-    NSLog(@"================================JJException End====================================");
-    if (self.exceptionWhenTerminate) {
-        NSAssert(NO, @"");
+        NSLog(@"JJException category:%ld message:%@ extra:%@ stack:%@",
+              (long)exceptionCategory, exceptionMessage, info, callStack);
+#endif
+    } @catch (NSException *reportingException) {
+        // Reporting must not escape into the operation it was meant to protect.
+        // Do not report this exception through the same delegate.
+    } @finally {
+        pthread_setspecific(reportingKey, NULL);
     }
+#ifdef DEBUG
+    if (self.exceptionWhenTerminate) NSAssert(NO, @"JJException detected an invalid operation");
 #endif
 }
 
