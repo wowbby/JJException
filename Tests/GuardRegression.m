@@ -1,10 +1,16 @@
 #import <Foundation/Foundation.h>
 #import "JJException.h"
+#import "JJExceptionProxy.h"
 #include <pthread.h>
 #import <objc/runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #define CHECK(...) do { if (!(__VA_ARGS__)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #__VA_ARGS__); abort(); } } while (0)
+
+@interface GuardZombie : NSObject { char _payload[4096]; }
+@end
+@implementation GuardZombie
+@end
 
 @interface GuardReporter : NSObject <JJExceptionHandle>
 @property NSUInteger legacyCount;
@@ -49,6 +55,7 @@ int main(int argc, char **argv) {
         CHECK(argc == 2);
         NSString *which = @(argv[1]);
         [JJException configExceptionCategory:JJExceptionGuardArrayContainer | JJExceptionGuardDictionaryContainer | JJExceptionGuardNSStringContainer];
+        if ([which isEqual:@"zombie-cache"]) [JJException configExceptionCategory:JJExceptionGuardZombie];
         [JJException startGuardException];
         if ([which isEqual:@"collections"]) {
             pthread_attr_t attr;
@@ -93,6 +100,20 @@ int main(int argc, char **argv) {
             reporter.throwsException = NO;
             CHECK([[NSArray array] objectAtIndex:0] == nil);
             CHECK(reporter.count == 3);
+        } else if ([which isEqual:@"zombie-cache"]) {
+            [JJException addZombieObjectArray:@[[GuardZombie class]]];
+            @autoreleasepool {
+                __attribute__((objc_precise_lifetime)) id a = [GuardZombie new];
+                __attribute__((objc_precise_lifetime)) id b = [GuardZombie new];
+                CHECK(a != b);
+            }
+            CHECK([JJExceptionProxy shareExceptionProxy].currentZombieCount == 2);
+            for (NSUInteger i = 0; i < 3000; i++) {
+                @autoreleasepool { __attribute__((objc_precise_lifetime)) id object = [GuardZombie new]; CHECK(object != nil); }
+            }
+            CHECK([JJExceptionProxy shareExceptionProxy].currentZombieCount > 2);
+            CHECK([JJExceptionProxy shareExceptionProxy].currentZombieCount < 3002);
+            CHECK([JJExceptionProxy shareExceptionProxy].currentZombieSize <= 5 * 1024 * 1024);
         } else { CHECK(NO); }
         printf("PASS %s\n", argv[1]);
     }

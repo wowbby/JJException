@@ -62,11 +62,20 @@ uintptr_t get_slide_address(void) {
     return (uintptr_t)vmaddr_slide;
 }
 
+typedef struct JJZombieRecord {
+    void *pointer;
+    size_t size;
+    struct JJZombieRecord *next;
+} JJZombieRecord;
+static const size_t JJZombieCacheLimit = 5 * 1024 * 1024;
+
 @interface JJExceptionProxy(){
-    NSMutableSet* _currentClassesSet;
-    NSMutableSet* _blackClassesSet;
-    NSInteger _currentClassSize;
-    dispatch_semaphore_t _classArrayLock;//Protect _blackClassesSet and _currentClassesSet atomic
+    NSHashTable* _blackClassesSet;
+    JJZombieRecord *_zombieHead;
+    JJZombieRecord *_zombieTail;
+    NSUInteger _zombieCount;
+    NSUInteger _zombieSize;
+    dispatch_semaphore_t _classArrayLock;// Protect blacklist and zombie cache
     dispatch_semaphore_t _swizzleLock;//Protect swizzle atomic
 }
 
@@ -86,9 +95,7 @@ uintptr_t get_slide_address(void) {
 - (instancetype)init{
     self = [super init];
     if (self) {
-        _blackClassesSet = [NSMutableSet new];
-        _currentClassesSet = [NSMutableSet new];
-        _currentClassSize = 0;
+        _blackClassesSet = [NSHashTable hashTableWithOptions:NSPointerFunctionsOpaqueMemory | NSPointerFunctionsOpaquePersonality];
         _classArrayLock = dispatch_semaphore_create(1);
         _swizzleLock = dispatch_semaphore_create(1);
     }
@@ -191,51 +198,68 @@ uintptr_t get_slide_address(void) {
 
 
 
-- (void)addZombieObjectArray:(NSArray*)objects{
-    if (!objects) {
-        return;
+- (void)addZombieObjectArray:(NSArray*)objects {
+    // Validate outside the lock. Opaque pointer identity avoids invoking
+    // custom class hash/isEqual implementations from the dealloc hook.
+    for (id object in objects) {
+        if (!object_isClass(object)) continue;
+        dispatch_semaphore_wait(_classArrayLock, DISPATCH_TIME_FOREVER);
+        [_blackClassesSet addObject:object];
+        dispatch_semaphore_signal(_classArrayLock);
     }
+}
+
+- (BOOL)isZombieClass:(Class)cls {
     dispatch_semaphore_wait(_classArrayLock, DISPATCH_TIME_FOREVER);
-    [_blackClassesSet addObjectsFromArray:objects];
+    BOOL contains = [_blackClassesSet containsObject:cls];
+    dispatch_semaphore_signal(_classArrayLock);
+    return contains;
+}
+
+- (void)cacheZombie:(void *)pointer size:(size_t)size {
+    if (!pointer) return;
+    JJZombieRecord *record = size <= JJZombieCacheLimit - sizeof(JJZombieRecord) ? malloc(sizeof(*record)) : NULL;
+    if (!record) { free(pointer); return; }
+    *record = (JJZombieRecord){pointer, size + sizeof(*record), NULL};
+    dispatch_semaphore_wait(_classArrayLock, DISPATCH_TIME_FOREVER);
+    while (_zombieHead && _zombieSize > JJZombieCacheLimit - record->size) {
+        JJZombieRecord *old = _zombieHead;
+        _zombieHead = old->next;
+        _zombieSize -= old->size;
+        --_zombieCount;
+        free(old->pointer);
+        free(old);
+    }
+    if (!_zombieHead) _zombieTail = NULL;
+    if (_zombieTail) _zombieTail->next = record;
+    else _zombieHead = record;
+    _zombieTail = record;
+    _zombieSize += record->size;
+    ++_zombieCount;
     dispatch_semaphore_signal(_classArrayLock);
 }
 
-- (NSSet*)blackClassesSet{
-    return _blackClassesSet;
+- (NSUInteger)currentZombieCount {
+    dispatch_semaphore_wait(_classArrayLock, DISPATCH_TIME_FOREVER);
+    NSUInteger count = _zombieCount;
+    dispatch_semaphore_signal(_classArrayLock);
+    return count;
 }
 
-- (void)addCurrentZombieClass:(Class)object{
-    if (object) {
-        dispatch_semaphore_wait(_classArrayLock, DISPATCH_TIME_FOREVER);
-        _currentClassSize = _currentClassSize + class_getInstanceSize(object);
-        [_currentClassesSet addObject:object];
-        dispatch_semaphore_signal(_classArrayLock);
+- (NSUInteger)currentZombieSize {
+    dispatch_semaphore_wait(_classArrayLock, DISPATCH_TIME_FOREVER);
+    NSUInteger size = _zombieSize;
+    dispatch_semaphore_signal(_classArrayLock);
+    return size;
+}
+
+- (void)dealloc {
+    while (_zombieHead) {
+        JJZombieRecord *old = _zombieHead;
+        _zombieHead = old->next;
+        free(old->pointer);
+        free(old);
     }
-}
-
-- (void)removeCurrentZombieClass:(Class)object{
-    if (object) {
-        dispatch_semaphore_wait(_classArrayLock, DISPATCH_TIME_FOREVER);
-        _currentClassSize = _currentClassSize - class_getInstanceSize(object);
-        [_currentClassesSet removeObject:object];
-        dispatch_semaphore_signal(_classArrayLock);
-    }
-}
-
-- (NSSet*)currentClassesSet{
-    return _currentClassesSet;
-}
-
-- (NSInteger)currentClassSize{
-    return _currentClassSize;
-}
-
-- (nullable id)objectFromCurrentClassesSet{
-    NSEnumerator* objectEnum = [_currentClassesSet objectEnumerator];
-    for (id object in objectEnum) {
-        return object;
-    }
-    return nil;
 }
 
 @end

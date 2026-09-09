@@ -10,8 +10,8 @@
 #import "NSObject+SwizzleHook.h"
 #import <objc/runtime.h>
 #import "JJExceptionProxy.h"
+#import <malloc/malloc.h>
 
-const NSInteger MAX_ARRAY_SIZE = 1024 * 1024 * 5;// MAX Memeory Size 5M
 
 @interface ZombieSelectorHandle : NSObject
 
@@ -34,6 +34,15 @@ void unrecognizedSelectorZombie(ZombieSelectorHandle* self, SEL _cmd){
 
 @implementation JJZombieSub
 
+// Cached instances are owned by the raw-pointer queue, never by ARC/MRC clients.
+- (id)retain { return self; }
+- (oneway void)release {}
+- (id)autorelease { return self; }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wobjc-missing-super-calls"
+- (void)dealloc {} // Only the cache may free this already-destructed allocation.
+#pragma clang diagnostic pop
+
 - (id)forwardingTargetForSelector:(SEL)selector{
     NSMethodSignature* sign = [self methodSignatureForSelector:selector];
     if (!sign) {
@@ -54,25 +63,16 @@ void unrecognizedSelectorZombie(ZombieSelectorHandle* self, SEL _cmd){
 }
 
 - (void)hookDealloc{
-    Class currentClass = self.class;
-    
-    //Check black list
-    if (![[[JJExceptionProxy shareExceptionProxy] blackClassesSet] containsObject:currentClass]) {
+    Class currentClass = object_getClass(self);
+    JJExceptionProxy *proxy = [JJExceptionProxy shareExceptionProxy];
+    if (![proxy isZombieClass:currentClass]) {
         [self hookDealloc];
         return;
     }
-    
-    //Check the array max size
-    //TODO:Real remove less than MAX_ARRAY_SIZE
-    if ([JJExceptionProxy shareExceptionProxy].currentClassSize > MAX_ARRAY_SIZE) {
-        id object = [[JJExceptionProxy shareExceptionProxy] objectFromCurrentClassesSet];
-        [[JJExceptionProxy shareExceptionProxy] removeCurrentZombieClass:object_getClass(object)];
-        object?free(object):nil;
-    }
-    
+    size_t size = malloc_size(self);
     objc_destructInstance(self);
     object_setClass(self, [JJZombieSub class]);
-    [[JJExceptionProxy shareExceptionProxy] addCurrentZombieClass:currentClass];
+    [proxy cacheZombie:self size:size];
 }
 
 @end

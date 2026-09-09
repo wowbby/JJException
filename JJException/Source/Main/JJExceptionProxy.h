@@ -86,41 +86,11 @@ __attribute__((overloadable)) void handleCrashException(JJExceptionGuardCategory
  */
 - (void)addZombieObjectArray:(NSArray*)objects;
 
-/**
- Zombie only process the Set class
- */
-@property(nonatomic,readonly,strong)NSSet* blackClassesSet;
-
-/**
- Record the all Set class size
- */
-@property(nonatomic,readonly,assign)NSInteger currentClassSize;
-
-/**
- Add object to the currentClassesSet
- 
- @param object NSObject
- */
-- (void)addCurrentZombieClass:(Class)object;
-
-/**
- Remove object from the currentClassesSet
-
- @param object NSObject
- */
-- (void)removeCurrentZombieClass:(Class)object;
-
-/**
- Record the objc_destructInstance instance object
- */
-@property(nonatomic,readonly,strong)NSSet* currentClassesSet;
-
-/**
- Random get the object from blackClassesSet
-
- @return NSObject
- */
-- (nullable id)objectFromCurrentClassesSet;
+// Internal diagnostics and storage. Pointer values are never retained as objects.
+- (BOOL)isZombieClass:(Class)cls;
+- (void)cacheZombie:(void *)pointer size:(size_t)size;
+@property(nonatomic,readonly)NSUInteger currentZombieCount;
+@property(nonatomic,readonly)NSUInteger currentZombieSize;
 
 @end
 
