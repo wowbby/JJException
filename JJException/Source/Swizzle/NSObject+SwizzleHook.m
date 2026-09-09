@@ -105,6 +105,7 @@ BOOL jj_requiresDeallocSwizzle(Class class)
 
 void jj_swizzleDeallocIfNeeded(Class class)
 {
+    if (!class) return;
     static SEL deallocSEL = NULL;
     static SEL cleanupSEL = NULL;
     
@@ -114,42 +115,44 @@ void jj_swizzleDeallocIfNeeded(Class class)
         cleanupSEL = sel_getUid("jj_cleanKVO");
     });
     
-    @synchronized (class) {
-        if ( !jj_requiresDeallocSwizzle(class) ) {
-            return;
+    // Serialize superclass/subclass installation as well as the same class.
+    @synchronized ([JJSwizzleObject class]) {
+        if (!jj_requiresDeallocSwizzle(class)) return;
+
+        Method dealloc = NULL;
+        unsigned int count = 0;
+        Method *methods = class_copyMethodList(class, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            if (method_getName(methods[i]) == deallocSEL) {
+                dealloc = methods[i];
+                break;
+            }
         }
-        
+        free(methods);
+
+        if (dealloc == NULL) {
+            Class superclass = class_getSuperclass(class);
+            Method inheritedDealloc = class_getInstanceMethod(superclass, deallocSEL);
+            IMP cleanupIMP = imp_implementationWithBlock(^(__unsafe_unretained id self) {
+                ((void(*)(id, SEL))objc_msgSend)(self, cleanupSEL);
+                struct objc_super superStruct = (struct objc_super){ self, superclass };
+                ((void (*)(struct objc_super*, SEL))objc_msgSendSuper)(&superStruct, deallocSEL);
+            });
+            if (!class_addMethod(class, deallocSEL, cleanupIMP, method_getTypeEncoding(inheritedDealloc))) {
+                imp_removeBlock(cleanupIMP);
+                return;
+            }
+        } else {
+            // Capture the original before publishing the replacement. A concurrent
+            // dealloc must never see a block whose original IMP is still NULL.
+            IMP deallocIMP = method_getImplementation(dealloc);
+            method_setImplementation(dealloc, imp_implementationWithBlock(^(__unsafe_unretained id self) {
+                ((void(*)(id, SEL))objc_msgSend)(self, cleanupSEL);
+                ((void(*)(id, SEL))deallocIMP)(self, deallocSEL);
+            }));
+        }
+        // Publish only after the cleanup implementation is installed.
         objc_setAssociatedObject(class, &jjSwizzledDeallocKey, @(YES), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    
-    Method dealloc = NULL;
-    
-    unsigned int count = 0;
-    Method* method = class_copyMethodList(class, &count);
-    for (unsigned int i = 0; i < count; i++) {
-        if (method_getName(method[i]) == deallocSEL) {
-            dealloc = method[i];
-            break;
-        }
-    }
-    
-    if ( dealloc == NULL ) {
-        Class superclass = class_getSuperclass(class);
-        
-        class_addMethod(class, deallocSEL, imp_implementationWithBlock(^(__unsafe_unretained id self) {
-            
-            ((void(*)(id, SEL))objc_msgSend)(self, cleanupSEL);
-            
-            struct objc_super superStruct = (struct objc_super){ self, superclass };
-            ((void (*)(struct objc_super*, SEL))objc_msgSendSuper)(&superStruct, deallocSEL);
-            
-        }), method_getTypeEncoding(dealloc));
-    }else{
-        __block IMP deallocIMP = method_setImplementation(dealloc, imp_implementationWithBlock(^(__unsafe_unretained id self) {
-            ((void(*)(id, SEL))objc_msgSend)(self, cleanupSEL);
-            
-            ((void(*)(id, SEL))deallocIMP)(self, deallocSEL);
-        }));
     }
 }
 

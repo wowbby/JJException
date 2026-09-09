@@ -9,321 +9,300 @@
 #import "NSObject+KVOCrash.h"
 #import "NSObject+SwizzleHook.h"
 #import <objc/runtime.h>
-#import <objc/message.h>
 #import "JJExceptionProxy.h"
 
 static const char DeallocKVOKey;
 
-/**
- Record the kvo object
- Override the isEqual and hash method
- */
+// Only protects bookkeeping. Never hold it while calling native KVO or client code.
+static NSRecursiveLock *JJKVOLock(void) {
+    static NSRecursiveLock *lock;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ lock = [NSRecursiveLock new]; });
+    return lock;
+}
+
 @interface KVOObjectItem : NSObject
-
-/// KVO observer
-@property(nonatomic,readwrite,assign)NSObject* observer;
-
-/// KVO which object
-@property(nonatomic,readwrite,assign)NSObject* whichObject;
-
-@property(nonatomic,readwrite,copy)NSString* keyPath;
-
-@property(nonatomic,readwrite,assign)NSKeyValueObservingOptions options;
-
-@property(nonatomic,readwrite,assign)void* context;
-
+@property(nonatomic, retain) NSMapTable *endpoints;
+@property(nonatomic, copy) NSString *keyPath;
+@property(nonatomic, assign) void *observerIdentity;
+@property(nonatomic, assign) void *objectIdentity;
+@property(nonatomic, assign) void *context;
+@property(nonatomic, assign) NSKeyValueObservingOptions options;
+@property(nonatomic, assign) BOOL requested;
+@property(nonatomic, assign) BOOL registered;
+@property(nonatomic, assign) BOOL transitioning;
+@property(nonatomic, assign) BOOL refreshAfterAdd;
 @end
 
 @implementation KVOObjectItem
-
 - (instancetype)init {
-    self = [super init];
-    if (self) {
-
+    if ((self = [super init])) {
+        _endpoints = [[NSMapTable strongToWeakObjectsMapTable] retain];
     }
     return self;
 }
-
-- (BOOL)isEqual:(KVOObjectItem*)object{
-    // check object nil
-    if (!self.observer || !self.whichObject || !self.keyPath
-        || !object.observer || !object.whichObject || !object.keyPath) {
-        return NO;
-    }
-    if ([self.observer isEqual:object.observer] && [self.whichObject isEqual:object.whichObject] && [self.keyPath isEqualToString:object.keyPath]) {
-        return YES;
-    }
-    return NO;
-}
-
-- (NSUInteger)hash{
-    return [self.observer hash] ^ [self.whichObject hash] ^ [self.keyPath hash];
-}
-
-- (void)dealloc{
-    self.observer = nil;
-    self.whichObject = nil;
-    self.context = nil;
-    if (self.keyPath) {
-        [self.keyPath release];
-    }
+- (void)dealloc {
+    [_endpoints release];
+    [_keyPath release];
     [super dealloc];
 }
-
 @end
 
-
 @interface KVOObjectContainer : NSObject
-
-/**
- KVO object array set
- */
-@property(nonatomic,readwrite,retain)NSMutableSet* kvoObjectSet;
-
-/**
- NSMutableSet safe-thread
- */
-#if OS_OBJECT_HAVE_OBJC_SUPPORT
-@property(nonatomic,readwrite,retain)dispatch_semaphore_t kvoLock;
-#else
-@property(nonatomic,readwrite,assign)dispatch_semaphore_t kvoLock;
-#endif
-@property(nonatomic,readwrite,assign)NSThread *lockOwnerThread;
-@property(nonatomic,readwrite,assign)NSInteger lockCount;
-
-- (void)checkAddKVOItemExist:(KVOObjectItem*)item existResult:(void (^)(void))existResult;
-
+@property(nonatomic, retain) NSMutableArray *items;
+@property(nonatomic, assign) BOOL cleaning;
 @end
 
 @implementation KVOObjectContainer
-
-/// Check item exist and block result
-/// @param item KVOObjectItem
-/// @param existResult item exist block
-- (void)checkAddKVOItemExist:(KVOObjectItem*)item existResult:(void (^)(void))existResult{
-    if (!item) {
-        return;
+- (instancetype)init {
+    if ((self = [super init])) {
+        _items = [NSMutableArray new];
     }
-    BOOL needExecute = NO;
-    [self lock];
-    BOOL exist = [self.kvoObjectSet containsObject:item];
-    if (!exist) {
-        [self.kvoObjectSet addObject:item];
-        needExecute = YES;
-    }
-    [self unlock];
-    if (needExecute && existResult) {
-        existResult();
-    }
+    return self;
 }
-
-- (void)lockObjectSet:(void (^)(NSMutableSet *kvoObjectSet))objectSet {
-    if (objectSet) {
-        [self lock];
-        objectSet(self.kvoObjectSet);
-        [self unlock];
-    }
-}
-
-- (dispatch_semaphore_t)kvoLock{
-    if (!_kvoLock) {
-        _kvoLock = dispatch_semaphore_create(1);
-        return _kvoLock;
-    }
-    return _kvoLock;
-}
-
-/**
- Clean the kvo object array and temp var
- release the dispatch_semaphore
- */
-- (void)dealloc{
-    [self.kvoObjectSet release];
-    dispatch_release(self.kvoLock);
+- (void)dealloc {
+    [_items release];
     [super dealloc];
 }
-
-/// Clean the kvo info and set the item property nil,break the reference
-- (void)cleanKVOData{
-    NSMutableArray *itemsNeedClean = nil;
-    [self lock];
-    for (KVOObjectItem* item in self.kvoObjectSet) {
-        if (item.observer && item.whichObject && item.keyPath.length > 0) {
-            if (!itemsNeedClean) {
-                itemsNeedClean = [[NSMutableArray alloc] init];
-            }
-            [itemsNeedClean addObject:item];
-        }else{
-            item.observer = nil;
-            item.whichObject = nil;
-            item.keyPath = nil;
-        }
-    }
-    [self.kvoObjectSet removeAllObjects];
-    [self unlock];
-
-    if (!itemsNeedClean) {
-        return;
-    }
-
-    #pragma clang diagnostic push
-    #pragma clang diagnostic ignored "-Wundeclared-selector"
-    for (KVOObjectItem* item in itemsNeedClean) {
-        @try {
-            ((void(*)(id,SEL,id,NSString*))objc_msgSend)(item.whichObject,@selector(hookRemoveObserver:forKeyPath:),item.observer,item.keyPath);
-        }@catch (NSException *exception) {
-        }
-        item.observer = nil;
-        item.whichObject = nil;
-        item.keyPath = nil;
-    }
-    #pragma clang diagnostic pop
-
-    [itemsNeedClean release];
-}
-
-- (void)lock{
-    NSThread *currentThread = [NSThread currentThread];
-    if (self.lockOwnerThread == currentThread) {
-        self.lockCount += 1;
-        return;
-    }
-    dispatch_semaphore_wait(self.kvoLock, DISPATCH_TIME_FOREVER);
-    self.lockOwnerThread = currentThread;
-    self.lockCount = 1;
-}
-
-- (void)unlock{
-    if (self.lockOwnerThread != [NSThread currentThread]) {
-        return;
-    }
-    self.lockCount -= 1;
-    if (self.lockCount <= 0) {
-        self.lockOwnerThread = nil;
-        self.lockCount = 0;
-        dispatch_semaphore_signal(self.kvoLock);
-    }
-}
-
-- (NSMutableSet*)kvoObjectSet{
-    if(_kvoObjectSet){
-        return _kvoObjectSet;
-    }
-    _kvoObjectSet = [[NSMutableSet alloc] init];
-    return _kvoObjectSet;
-}
-
 @end
+
+// Call only with JJKVOLock held. Creation and publication must be one operation.
+static KVOObjectContainer *JJContainer(NSObject *object, BOOL create) {
+    KVOObjectContainer *container = objc_getAssociatedObject(object, &DeallocKVOKey);
+    if (!container && create) {
+        container = [[[KVOObjectContainer alloc] init] autorelease];
+        objc_setAssociatedObject(object, &DeallocKVOKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return container;
+}
+
+static void JJUnlinkItem(KVOObjectItem *item, NSObject *object, NSObject *observer) {
+    [JJContainer(object, NO).items removeObjectIdenticalTo:item];
+    [JJContainer(observer, NO).items removeObjectIdenticalTo:item];
+}
+
+static KVOObjectItem *JJFindItem(NSObject *object, NSObject *observer, NSString *keyPath,
+                                void *context, BOOL matchContext) {
+    // The context-less API removes one registration, most recently added first.
+    for (KVOObjectItem *item in [JJContainer(object, NO).items reverseObjectEnumerator]) {
+        if (item.objectIdentity == object && item.observerIdentity == observer &&
+            [item.keyPath isEqualToString:keyPath] && (!matchContext || item.context == context) &&
+            (matchContext || item.requested)) {
+            return item;
+        }
+    }
+    return nil;
+}
+
+@interface NSObject (JJKVOPrivate)
+- (BOOL)ignoreKVOInstanceClass:(id)object;
+- (void)hookAddObserver:(NSObject *)observer forKeyPath:(NSString *)keyPath
+               options:(NSKeyValueObservingOptions)options context:(void *)context;
+- (void)hookRemoveObserver:(NSObject *)observer forKeyPath:(NSString *)keyPath;
+- (void)hookRemoveObserver:(NSObject *)observer forKeyPath:(NSString *)keyPath context:(void *)context;
+@end
+
+// Foundation's context-aware removal can call the context-less API internally.
+// Bypass bookkeeping only for that exact synchronous call, not other KVO operations.
+typedef struct JJNativeRemoval {
+    NSObject *object;
+    NSObject *observer;
+    NSString *keyPath;
+    struct JJNativeRemoval *previous;
+} JJNativeRemoval;
+static __thread JJNativeRemoval *jj_nativeRemoval;
+
+static void JJRemoveNative(KVOObjectItem *item, NSObject *object, NSObject *observer) {
+    JJNativeRemoval removal = {object, observer, item.keyPath, jj_nativeRemoval};
+    jj_nativeRemoval = &removal;
+    @try {
+        [object hookRemoveObserver:observer forKeyPath:item.keyPath context:item.context];
+    } @finally {
+        jj_nativeRemoval = removal.previous;
+    }
+}
+
+// Exactly one caller drives a relation. Reentrant/concurrent callers change requested
+// without waiting; the driver reconciles it after native KVO returns. In particular,
+// an Initial callback may cancel a registration before addObserver has finished.
+// The caller keeps the endpoints alive, except the endpoint currently in dealloc.
+static void JJReconcileItem(KVOObjectItem *item, NSObject *object, NSObject *observer) {
+    NSException *registrationError = nil;
+    while (YES) {
+        BOOL adding;
+        NSKeyValueObservingOptions options;
+        [JJKVOLock() lock];
+        @try {
+            if (item.requested == item.registered && !(item.registered && item.refreshAfterAdd)) {
+                item.transitioning = NO;
+                if (!item.requested) {
+                    JJUnlinkItem(item, object, observer);
+                }
+                break;
+            }
+            adding = !item.registered;
+            if (adding) {
+                // Re-add changes registration order. Publish before native add, since
+                // its Initial callback can synchronously register another context.
+                NSMutableArray *items = JJContainer(object, NO).items;
+                [items removeObjectIdenticalTo:item];
+                [items addObject:item];
+            } else {
+                item.refreshAfterAdd = NO;
+            }
+            options = item.options;
+        } @finally {
+            [JJKVOLock() unlock];
+        }
+
+        BOOL succeeded = YES;
+        @try {
+            if (adding) {
+                [object hookAddObserver:observer forKeyPath:item.keyPath options:options context:item.context];
+            } else {
+                JJRemoveNative(item, object, observer);
+            }
+        } @catch (NSException *exception) {
+            succeeded = NO;
+            if (adding) {
+                [registrationError release];
+                registrationError = [exception retain];
+                // An Initial value lookup can throw after Foundation has registered.
+                @try { JJRemoveNative(item, object, observer); }
+                @catch (__unused NSException *cleanupException) {}
+            }
+        }
+
+        [JJKVOLock() lock];
+        @try {
+            item.registered = adding && succeeded;
+            if (adding && !succeeded) {
+                // A newer remove/add request may have arrived during the failed add.
+                // Retry only that newer request, never the failed registration itself.
+                item.requested = item.requested && item.refreshAfterAdd;
+                item.refreshAfterAdd = NO;
+            }
+        } @finally {
+            [JJKVOLock() unlock];
+        }
+    }
+    if (registrationError) {
+        @try {
+            handleCrashException(JJExceptionGuardKVOCrash, registrationError.description);
+        } @finally {
+            [registrationError release];
+        }
+    }
+}
+
+static void JJRequestRemoval(NSObject *object, NSObject *observer, NSString *keyPath,
+                             void *context, BOOL matchContext) {
+    if (!observer || keyPath.length == 0) return;
+    // Keep weak endpoints valid until this operation has completed.
+    [object retain];
+    [observer retain];
+    KVOObjectItem *item = nil;
+    BOOL drive = NO;
+    @try {
+        [JJKVOLock() lock];
+        @try {
+            item = [JJFindItem(object, observer, keyPath, context, matchContext) retain];
+            item.requested = NO;
+            if (item && !item.transitioning) {
+                item.transitioning = YES;
+                drive = YES;
+            }
+        } @finally {
+            [JJKVOLock() unlock];
+        }
+        if (drive) JJReconcileItem(item, object, observer);
+    } @finally {
+        [item release];
+        [observer release];
+        [object release];
+    }
+}
 
 @implementation NSObject (KVOCrash)
 
-+ (void)jj_swizzleKVOCrash{
-    swizzleInstanceMethod([self class], @selector(addObserver:forKeyPath:options:context:), @selector(hookAddObserver:forKeyPath:options:context:));
-    swizzleInstanceMethod([self class], @selector(removeObserver:forKeyPath:), @selector(hookRemoveObserver:forKeyPath:));
-    swizzleInstanceMethod([self class], @selector(removeObserver:forKeyPath:context:), @selector(hookRemoveObserver:forKeyPath:context:));
-    swizzleInstanceMethod([self class], @selector(observeValueForKeyPath:ofObject:change:context:), @selector(hookObserveValueForKeyPath:ofObject:change:context:));
++ (void)jj_swizzleKVOCrash {
+    swizzleInstanceMethod(self, @selector(addObserver:forKeyPath:options:context:), @selector(hookAddObserver:forKeyPath:options:context:));
+    swizzleInstanceMethod(self, @selector(removeObserver:forKeyPath:), @selector(hookRemoveObserver:forKeyPath:));
+    swizzleInstanceMethod(self, @selector(removeObserver:forKeyPath:context:), @selector(hookRemoveObserver:forKeyPath:context:));
+    swizzleInstanceMethod(self, @selector(observeValueForKeyPath:ofObject:change:context:), @selector(hookObserveValueForKeyPath:ofObject:change:context:));
 }
 
-- (void)hookAddObserver:(NSObject *)observer forKeyPath:(NSString *)keyPath options:(NSKeyValueObservingOptions)options context:(void *)context{
+- (void)hookAddObserver:(NSObject *)observer forKeyPath:(NSString *)keyPath options:(NSKeyValueObservingOptions)options context:(void *)context {
     if ([self ignoreKVOInstanceClass:observer]) {
         [self hookAddObserver:observer forKeyPath:keyPath options:options context:context];
         return;
     }
+    if (!observer || keyPath.length == 0) return;
 
-    if (!observer || keyPath.length == 0) {
-        return;
+    [self retain];
+    [observer retain];
+    KVOObjectItem *item = nil;
+    BOOL drive = NO;
+    @try {
+        [JJKVOLock() lock];
+        @try {
+            KVOObjectContainer *objectContainer = JJContainer(self, YES);
+            KVOObjectContainer *observerContainer = JJContainer(observer, YES);
+            if (!objectContainer.cleaning && !observerContainer.cleaning) {
+                item = [JJFindItem(self, observer, keyPath, context, YES) retain];
+                if (!item) {
+                    item = [KVOObjectItem new];
+                    item.objectIdentity = self;
+                    item.observerIdentity = observer;
+                    item.keyPath = keyPath;
+                    item.context = context;
+                    [item.endpoints setObject:self forKey:@"object"];
+                    [item.endpoints setObject:observer forKey:@"observer"];
+                    [objectContainer.items addObject:item];
+                    if (objectContainer != observerContainer) [observerContainer.items addObject:item];
+                    // Install on the logical class before Foundation creates its KVO subclass.
+                    jj_swizzleDeallocIfNeeded(self.class);
+                    jj_swizzleDeallocIfNeeded(observer.class);
+                }
+                if (!item.requested) {
+                    // A canceled in-flight add still uses its original options. Finish it,
+                    // then remove/add again so a new Initial request is not silently lost.
+                    if (item.transitioning && !item.registered) item.refreshAfterAdd = YES;
+                    item.options = options;
+                }
+                item.requested = YES;
+                if (!item.transitioning) {
+                    item.transitioning = YES;
+                    drive = YES;
+                }
+            }
+        } @finally {
+            [JJKVOLock() unlock];
+        }
+        if (drive) JJReconcileItem(item, self, observer);
+    } @finally {
+        [item release];
+        [observer release];
+        [self release];
     }
-
-    // Record the kvo relation
-    KVOObjectItem* item = [[KVOObjectItem alloc] init];
-    item.observer = observer;
-    item.keyPath = keyPath;
-    item.options = options;
-    item.context = context;
-    item.whichObject = self;
-
-    // Observer current self
-    KVOObjectContainer* objectContainer = objc_getAssociatedObject(self,&DeallocKVOKey);
-    if (!objectContainer) {
-        objectContainer = [KVOObjectContainer new];
-        objc_setAssociatedObject(self, &DeallocKVOKey, objectContainer, OBJC_ASSOCIATION_RETAIN);
-        [objectContainer release];
-    }
-
-    [objectContainer checkAddKVOItemExist:item existResult:^{
-        [self hookAddObserver:observer forKeyPath:keyPath options:options context:context];
-    }];
-
-    // Observer observer
-    KVOObjectContainer* observerContainer = objc_getAssociatedObject(observer,&DeallocKVOKey);
-    if (!observerContainer) {
-        observerContainer = [KVOObjectContainer new];
-        objc_setAssociatedObject(observer, &DeallocKVOKey, observerContainer, OBJC_ASSOCIATION_RETAIN);
-        [observerContainer release];
-    }
-    [observerContainer checkAddKVOItemExist:item existResult:nil];
-
-    [item release];
-
-    // clean the self and observer
-    jj_swizzleDeallocIfNeeded(self.class);
-    jj_swizzleDeallocIfNeeded(observer.class);
 }
 
-- (void)hookRemoveObserver:(NSObject *)observer forKeyPath:(NSString *)keyPath context:(void*)context{
+- (void)hookRemoveObserver:(NSObject *)observer forKeyPath:(NSString *)keyPath context:(void *)context {
     if ([self ignoreKVOInstanceClass:observer]) {
         [self hookRemoveObserver:observer forKeyPath:keyPath context:context];
         return;
     }
-
-    [self removeObserver:observer forKeyPath:keyPath];
+    JJRequestRemoval(self, observer, keyPath, context, YES);
 }
 
-- (void)hookRemoveObserver:(NSObject *)observer forKeyPath:(NSString *)keyPath{
-    if ([self ignoreKVOInstanceClass:observer]) {
+- (void)hookRemoveObserver:(NSObject *)observer forKeyPath:(NSString *)keyPath {
+    JJNativeRemoval *removal = jj_nativeRemoval;
+    if ((removal && removal->object == self && removal->observer == observer &&
+         [removal->keyPath isEqualToString:keyPath]) || [self ignoreKVOInstanceClass:observer]) {
         [self hookRemoveObserver:observer forKeyPath:keyPath];
         return;
     }
-
-    if (!observer) {
-        return;
-    }
-
-    KVOObjectContainer* objectContainer = objc_getAssociatedObject(self, &DeallocKVOKey);
-    if (!objectContainer) {
-        return;
-    }
-
-    /*
-     * Fix observer associated bug,disconnect the self and observer,
-     * bug link:https://github.com/jezzmemo/JJException/issues/68
-     */
-    [objectContainer lockObjectSet:^(NSMutableSet *kvoObjectSet) {
-        KVOObjectItem* targetItem = [[KVOObjectItem alloc] init];
-        targetItem.observer = observer;
-        targetItem.whichObject = self;
-        targetItem.keyPath = keyPath;
-
-        KVOObjectItem* resultItem = nil;
-        NSSet *set = [kvoObjectSet copy];
-        for (KVOObjectItem* item in set) {
-            if ([item isEqual:targetItem]) {
-                resultItem = item;
-                break;
-            }
-        }
-        if (resultItem) {
-            @try {
-                [self hookRemoveObserver:observer forKeyPath:keyPath];
-            }@catch (NSException *exception) {
-            }
-            //Clean the reference
-            resultItem.observer = nil;
-            resultItem.whichObject = nil;
-            resultItem.keyPath = nil;
-            [kvoObjectSet removeObject:resultItem];
-        }
-    }];
+    JJRequestRemoval(self, observer, keyPath, NULL, NO);
 }
 
 - (void)hookObserveValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
@@ -331,7 +310,6 @@ static const char DeallocKVOKey;
         [self hookObserveValueForKeyPath:keyPath ofObject:object change:change context:context];
         return;
     }
-
     @try {
         [self hookObserveValueForKeyPath:keyPath ofObject:object change:change context:context];
     } @catch (NSException *exception) {
@@ -339,12 +317,6 @@ static const char DeallocKVOKey;
     }
 }
 
-/**
- Ignore Special Library
-
- @param object Instance Class
- @return YES or NO
- */
 - (BOOL)ignoreKVOInstanceClass:(id)object{
 
     if (!object) {
@@ -372,14 +344,49 @@ static const char DeallocKVOKey;
     return NO;
 }
 
-/**
- * Hook the kvo object dealloc and to clean the kvo array
- */
-- (void)jj_cleanKVO{
-    KVOObjectContainer* objectContainer = objc_getAssociatedObject(self, &DeallocKVOKey);
 
-    if (objectContainer) {
-        [objectContainer cleanKVOData];
+- (void)jj_cleanKVO {
+    NSArray *items;
+    [JJKVOLock() lock];
+    @try {
+        KVOObjectContainer *container = JJContainer(self, NO);
+        if (!container || container.cleaning) return;
+        container.cleaning = YES;
+        items = [container.items copy];
+    } @finally {
+        [JJKVOLock() unlock];
+    }
+    @try {
+        for (KVOObjectItem *item in items) {
+            // Zeroing weak references are already nil for self during deallocation.
+            NSObject *object = nil, *observer = nil;
+            BOOL drive = NO;
+            [JJKVOLock() lock];
+            @try {
+                object = item.objectIdentity == self ? self : [[item.endpoints objectForKey:@"object"] retain];
+                observer = item.observerIdentity == self ? self : [[item.endpoints objectForKey:@"observer"] retain];
+                item.requested = NO;
+                if (object && observer && !item.transitioning) {
+                    item.transitioning = YES;
+                    drive = YES;
+                } else if (!object || !observer) {
+                    JJUnlinkItem(item, object, observer);
+                }
+            } @finally {
+                [JJKVOLock() unlock];
+            }
+            @try {
+                if (drive) JJReconcileItem(item, object, observer);
+            } @finally {
+                if (observer != self) [observer release];
+                if (object != self) [object release];
+            }
+        }
+    } @finally {
+        [JJKVOLock() lock];
+        @try { [JJContainer(self, NO).items removeAllObjects]; }
+        @finally { [JJKVOLock() unlock]; }
+        [items release];
     }
 }
 
