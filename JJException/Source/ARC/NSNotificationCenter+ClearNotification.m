@@ -14,6 +14,8 @@
 
 JJSYNTH_DUMMY_CLASS(NSNotificationCenter_ClearNotification)
 
+static char jjNotificationCentersKey;
+
 @implementation NSNotificationCenter (ClearNotification)
 
 + (void)jj_swizzleNSNotificationCenter{
@@ -30,17 +32,35 @@ JJSYNTH_DUMMY_CLASS(NSNotificationCenter_ClearNotification)
         return;
     }
     
-    if ([observer isKindOfClass:NSObject.class]) {
-        __unsafe_unretained typeof(observer) unsafeObject = observer;
-        [observer jj_deallocBlock:^{
-            [[NSNotificationCenter defaultCenter] removeObserver:unsafeObject];
-        }];
+    // Selector observers are cleaned up by Foundation on these systems.
+    if (@available(iOS 9.0, macOS 10.11, watchOS 2.0, tvOS 9.0, *)) {
+    } else {
+        [self jj_registerLegacyObserverCleanup:observer];
     }
     
     void(*originIMP)(__unsafe_unretained id,SEL,id,SEL,NSString*,id);
     originIMP = (__typeof(originIMP))[swizzleInfo getOriginalImplementation];
     if (originIMP != NULL) {
         originIMP(self,swizzleInfo.selector,observer,aSelector,aName,anObject);
+    }
+}
+
+// Separate the legacy path so it can be regression-tested on a current runtime.
+- (void)jj_registerLegacyObserverCleanup:(id)observer {
+    if (![observer isKindOfClass:NSObject.class]) return;
+    @synchronized (observer) {
+        NSHashTable *centers = objc_getAssociatedObject(observer, &jjNotificationCentersKey);
+        if (!centers) {
+            centers = [NSHashTable hashTableWithOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality];
+            objc_setAssociatedObject(observer, &jjNotificationCentersKey, centers, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            __unsafe_unretained id unsafeObserver = observer;
+            [observer jj_deallocBlock:^{
+                for (NSNotificationCenter *center in centers.allObjects) {
+                    [center removeObserver:unsafeObserver];
+                }
+            }];
+        }
+        [centers addObject:self];
     }
 }
 

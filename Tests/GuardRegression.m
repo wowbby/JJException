@@ -1,11 +1,35 @@
 #import <Foundation/Foundation.h>
 #import "JJException.h"
 #import "JJExceptionProxy.h"
+#import "NSObject+SwizzleHook.h"
 #include <pthread.h>
 #import <objc/runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #define CHECK(...) do { if (!(__VA_ARGS__)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #__VA_ARGS__); abort(); } } while (0)
+
+@interface NSNotificationCenter (GuardTestLegacy)
+- (void)jj_registerLegacyObserverCleanup:(id)observer;
+@end
+@interface GuardCenter : NSNotificationCenter
+@property NSUInteger removals;
+@end
+@implementation GuardCenter
+- (void)removeObserver:(id)observer { self.removals++; [super removeObserver:observer]; }
+@end
+@interface GuardObserver : NSObject
+@property NSUInteger count;
+- (void)receive:(NSNotification *)note;
+- (NSInteger)number;
+@end
+@implementation GuardObserver
+- (void)receive:(NSNotification *)note { self.count++; }
+- (NSInteger)number { return 7; }
+@end
+@interface GuardChild : GuardObserver
+@end
+@implementation GuardChild
+@end
 
 @interface GuardZombie : NSObject { char _payload[4096]; }
 @end
@@ -56,6 +80,7 @@ int main(int argc, char **argv) {
         NSString *which = @(argv[1]);
         [JJException configExceptionCategory:JJExceptionGuardArrayContainer | JJExceptionGuardDictionaryContainer | JJExceptionGuardNSStringContainer];
         if ([which isEqual:@"zombie-cache"]) [JJException configExceptionCategory:JJExceptionGuardZombie];
+        if ([which isEqual:@"notifications"]) [JJException configExceptionCategory:JJExceptionGuardNSNotificationCenter];
         [JJException startGuardException];
         if ([which isEqual:@"collections"]) {
             pthread_attr_t attr;
@@ -114,6 +139,36 @@ int main(int argc, char **argv) {
             CHECK([JJExceptionProxy shareExceptionProxy].currentZombieCount > 2);
             CHECK([JJExceptionProxy shareExceptionProxy].currentZombieCount < 3002);
             CHECK([JJExceptionProxy shareExceptionProxy].currentZombieSize <= 5 * 1024 * 1024);
+        } else if ([which isEqual:@"notifications"]) {
+            GuardCenter *center = [GuardCenter new];
+            GuardCenter *other = [GuardCenter new];
+            @autoreleasepool {
+                GuardObserver *observer = [GuardObserver new];
+                for (NSUInteger i = 0; i < 100; i++) {
+                    [center addObserver:observer selector:@selector(receive:) name:@"test" object:nil];
+                    [center postNotificationName:@"test" object:nil];
+                    [center removeObserver:observer];
+                }
+                CHECK(observer.count == 100);
+                for (NSUInteger i = 0; i < 100; i++) [center jj_registerLegacyObserverCleanup:observer];
+                [other jj_registerLegacyObserverCleanup:observer];
+                [center addObserver:observer selector:@selector(receive:) name:@"test" object:nil];
+                CHECK(center.removals == 100 && other.removals == 0);
+            }
+            CHECK(center.removals == 101 && other.removals == 1);
+            [center postNotificationName:@"test" object:nil];
+        } else if ([which isEqual:@"swizzle"]) {
+            [GuardChild jj_swizzleInstanceMethod:@selector(number) withSwizzledBlock:^id(JJSwizzleObject *info) {
+                NSInteger (*original)(id, SEL) = (void *)[info getOriginalImplementation];
+                // A factory can access the original even before the replacement is installed.
+                CHECK(original([GuardChild new], @selector(number)) == 7);
+                return ^NSInteger(id object) { return original(object, @selector(number)) + 1; };
+            }];
+            CHECK([[GuardChild new] number] == 8);
+            CHECK([[GuardObserver new] number] == 7);
+            __block BOOL called = NO;
+            [GuardChild jj_swizzleInstanceMethod:NSSelectorFromString(@"absent") withSwizzledBlock:^id(JJSwizzleObject *info) { called = YES; return nil; }];
+            CHECK(!called);
         } else { CHECK(NO); }
         printf("PASS %s\n", argv[1]);
     }

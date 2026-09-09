@@ -35,6 +35,7 @@ void swizzleClassMethod(Class cls, SEL originSelector, SEL swizzleSelector){
     }
     Method originalMethod = class_getClassMethod(cls, originSelector);
     Method swizzledMethod = class_getClassMethod(cls, swizzleSelector);
+    if (!originalMethod || !swizzledMethod) return;
     
     Class metacls = objc_getMetaClass(NSStringFromClass(cls).UTF8String);
     if (class_addMethod(metacls,
@@ -66,6 +67,7 @@ void swizzleInstanceMethod(Class cls, SEL originSelector, SEL swizzleSelector){
     /* if current class not exist selector, then get super*/
     Method originalMethod = class_getInstanceMethod(cls, originSelector);
     Method swizzledMethod = class_getInstanceMethod(cls, swizzleSelector);
+    if (!originalMethod || !swizzledMethod) return;
     
     /* add selector if not exist, implement append with method */
     if (class_addMethod(cls,
@@ -160,32 +162,20 @@ void jj_swizzleDeallocIfNeeded(Class class)
 @implementation NSObject (SwizzleHook)
 
 void __JJ_SWIZZLE_BLOCK(Class classToSwizzle,SEL selector,JJSwizzledIMPBlock impBlock){
-    Method method = class_getInstanceMethod(classToSwizzle, selector);
-    
-    __block IMP originalIMP = NULL;
-    
-    JJSWizzleImpProvider originalImpProvider = ^IMP{
-        
-        IMP imp = originalIMP;
-        
-        if (NULL == imp){
-            Class superclass = class_getSuperclass(classToSwizzle);
-            imp = method_getImplementation(class_getInstanceMethod(superclass,selector));
-        }
-        return imp;
-    };
-    
-    JJSwizzleObject* swizzleInfo = [JJSwizzleObject new];
-    swizzleInfo.selector = selector;
-    swizzleInfo.impProviderBlock = originalImpProvider;
-    
-    id newIMPBlock = impBlock(swizzleInfo);
-    
-    const char* methodType = method_getTypeEncoding(method);
-    
-    IMP newIMP = imp_implementationWithBlock(newIMPBlock);
-    
-    originalIMP = class_replaceMethod(classToSwizzle, selector, newIMP, methodType);
+    if (!classToSwizzle || !selector || !impBlock) return;
+    @synchronized ([JJSwizzleObject class]) {
+        Method method = class_getInstanceMethod(classToSwizzle, selector);
+        if (!method) return;
+        // Capture before publishing: callers must never observe an uninitialized IMP.
+        IMP originalIMP = method_getImplementation(method);
+        JJSwizzleObject *swizzleInfo = [JJSwizzleObject new];
+        swizzleInfo.selector = selector;
+        swizzleInfo.impProviderBlock = ^IMP { return originalIMP; };
+        id newIMPBlock = impBlock(swizzleInfo);
+        if (!newIMPBlock) return;
+        IMP newIMP = imp_implementationWithBlock(newIMPBlock);
+        class_replaceMethod(classToSwizzle, selector, newIMP, method_getTypeEncoding(method));
+    }
 }
 
 + (void)jj_swizzleClassMethod:(SEL)originSelector withSwizzleMethod:(SEL)swizzleSelector{
