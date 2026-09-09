@@ -21,10 +21,12 @@
 @property NSUInteger count;
 - (void)receive:(NSNotification *)note;
 - (NSInteger)number;
+- (void)tick:(NSTimer *)timer;
 @end
 @implementation GuardObserver
 - (void)receive:(NSNotification *)note { self.count++; }
 - (NSInteger)number { return 7; }
+- (void)tick:(NSTimer *)timer { self.count++; }
 @end
 @interface GuardChild : GuardObserver
 @end
@@ -81,6 +83,7 @@ int main(int argc, char **argv) {
         [JJException configExceptionCategory:JJExceptionGuardArrayContainer | JJExceptionGuardDictionaryContainer | JJExceptionGuardNSStringContainer];
         if ([which isEqual:@"zombie-cache"]) [JJException configExceptionCategory:JJExceptionGuardZombie];
         if ([which isEqual:@"notifications"]) [JJException configExceptionCategory:JJExceptionGuardNSNotificationCenter];
+        if ([which isEqual:@"timers"]) [JJException configExceptionCategory:JJExceptionGuardNSTimer];
         [JJException startGuardException];
         if ([which isEqual:@"collections"]) {
             pthread_attr_t attr;
@@ -169,6 +172,21 @@ int main(int argc, char **argv) {
             __block BOOL called = NO;
             [GuardChild jj_swizzleInstanceMethod:NSSelectorFromString(@"absent") withSwizzledBlock:^id(JJSwizzleObject *info) { called = YES; return nil; }];
             CHECK(!called);
+        } else if ([which isEqual:@"timers"]) {
+            GuardObserver *target = [GuardObserver new];
+            NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:60 target:target selector:@selector(tick:) userInfo:nil repeats:YES];
+            [timer fire];
+            CHECK(target.count == 1 && timer.isValid);
+            [timer invalidate];
+            timer = [NSTimer scheduledTimerWithTimeInterval:60 target:target selector:NSSelectorFromString(@"absent:") userInfo:nil repeats:YES];
+            [timer fire];
+            CHECK(!timer.isValid);
+            @autoreleasepool {
+                GuardObserver *temporary = [GuardObserver new];
+                timer = [NSTimer scheduledTimerWithTimeInterval:60 target:temporary selector:@selector(tick:) userInfo:nil repeats:YES];
+            }
+            [timer fire];
+            CHECK(!timer.isValid);
         } else { CHECK(NO); }
         printf("PASS %s\n", argv[1]);
     }

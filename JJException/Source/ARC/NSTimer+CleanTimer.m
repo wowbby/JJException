@@ -50,16 +50,18 @@
 @implementation TimerObject
 
 - (void)fireTimer{
-    if (!self.target) {
-        [self.timer invalidate];
+    id target = self.target;
+    NSTimer *timer = self.timer;
+    if (!target || ![target respondsToSelector:self.selector]) {
+        [timer invalidate];
         self.timer = nil;
         handleCrashException(JJExceptionGuardNSTimer,[NSString stringWithFormat:@"Need invalidate timer from target:%@ method:%@",self.targetClassName,self.targetMethodName]);
         return;
     }
-    if ([self.target respondsToSelector:self.selector]) {
+    if (target) {
         // Fix swift case, the parent class is SwiftObject, did not invoke the methodSignatureForSelector method
         // https://github.com/jezzmemo/JJException/issues/123
-        ((void(*)(id, SEL, NSTimer*))objc_msgSend)(self.target, self.selector, _timer);
+        ((void(*)(id, SEL, NSTimer*))objc_msgSend)(target, self.selector, timer);
     }
 }
 
